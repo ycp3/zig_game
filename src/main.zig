@@ -4,11 +4,11 @@ const rlm = rl.math;
 
 pub const VOID_ARCHETYPE_HASH: u64 = 0;
 
-// TODO: Remove component_ids from ArchetypeStorage, not needed
 pub const EntityId = u64;
 pub const World = struct {
     allocator: std.mem.Allocator,
-    archetypes: std.AutoArrayHashMapUnmanaged(u64, ArchetypeStorage),
+    // hash -> Archetype
+    archetypes: std.AutoArrayHashMapUnmanaged(u64, Archetype),
     entities: std.AutoHashMapUnmanaged(EntityId, EntityInfo),
     entity_counter: EntityId,
 
@@ -24,10 +24,9 @@ pub const World = struct {
             .entities = .{},
             .entity_counter = 0,
         };
-        try world.archetypes.put(allocator, VOID_ARCHETYPE_HASH, ArchetypeStorage{
+        try world.archetypes.put(allocator, VOID_ARCHETYPE_HASH, Archetype{
             .allocator = allocator,
             .components = .{},
-            .component_ids = .{},
             .hash = VOID_ARCHETYPE_HASH,
         });
         return world;
@@ -98,7 +97,7 @@ pub const World = struct {
         return id;
     }
 
-    pub inline fn archetypeById(world: *World, _entity: EntityId) *ArchetypeStorage {
+    pub inline fn archetypeById(world: *World, _entity: EntityId) *Archetype {
         const ptr = world.entities.get(_entity).?;
         return &world.archetypes.values()[ptr.archetype_index];
     }
@@ -114,10 +113,9 @@ pub const World = struct {
 
         const archetype_entry = try world.archetypes.getOrPut(world.allocator, new_hash);
         if (!archetype_entry.found_existing) {
-            archetype_entry.value_ptr.* = ArchetypeStorage{
+            archetype_entry.value_ptr.* = Archetype{
                 .allocator = world.allocator,
                 .components = .{},
-                .component_ids = .{},
                 .hash = 0,
             };
 
@@ -134,7 +132,6 @@ pub const World = struct {
                     std.debug.assert(world.archetypes.swapRemove(new_hash));
                     return err;
                 };
-                try new_archetype.component_ids.append(world.allocator, component_id);
             }
 
             const erased = world.initErasedStorage(&new_archetype.entity_ids.items.len, T) catch |err| {
@@ -145,41 +142,38 @@ pub const World = struct {
                 std.debug.assert(world.archetypes.swapRemove(new_hash));
                 return err;
             };
-            try new_archetype.component_ids.append(world.allocator, component_id);
             new_archetype.calculateHash();
         }
 
-        var new_archetype_storage = archetype_entry.value_ptr;
+        var new_archetype = archetype_entry.value_ptr;
 
         if (new_hash == old_hash) {
             const ptr = world.entities.get(_entity).?;
-            try new_archetype_storage.set(ptr.row_index, T, component);
+            try new_archetype.set(ptr.row_index, T, component);
             return;
         }
 
-        const new_row = try new_archetype_storage.add(_entity);
+        const new_row = try new_archetype.add(_entity);
         const entity_info = world.entities.get(_entity).?;
 
         var column_iter = current_archetype.components.iterator();
         while (column_iter.next()) |entry| {
             const old_component_storage: *ErasedComponentStorage = entry.value_ptr;
-            var new_component_storage: ErasedComponentStorage = new_archetype_storage.components.get(entry.key_ptr.*).?;
+            var new_component_storage: ErasedComponentStorage = new_archetype.components.get(entry.key_ptr.*).?;
             new_component_storage.copy(new_component_storage.ptr, world.allocator, new_row, entity_info.row_index, old_component_storage.ptr) catch |err| {
-                new_archetype_storage.undoAdd();
+                new_archetype.undoAdd();
                 return err;
             };
         }
 
-        // new_archetype_storage.entity_ids.items[new_row] = _entity;
-
-        new_archetype_storage.set(new_row, T, component) catch |err| {
-            new_archetype_storage.undoAdd();
+        new_archetype.set(new_row, T, component) catch |err| {
+            new_archetype.undoAdd();
             return err;
         };
 
         const swapped_entity_id = current_archetype.entity_ids.items[current_archetype.entity_ids.items.len - 1];
         current_archetype.remove(entity_info.row_index) catch |err| {
-            new_archetype_storage.undoAdd();
+            new_archetype.undoAdd();
             return err;
         };
 
@@ -201,7 +195,7 @@ pub const World = struct {
     }
 
     pub fn query(world: *World, comptime components: []const type) []@Type(.{
-        .Struct = .{
+        .@"struct" = .{
             .layout = .auto,
             .is_tuple = false,
             .decls = &.{},
@@ -225,22 +219,21 @@ pub const World = struct {
     }
 };
 
-pub const ArchetypeStorage = struct {
+pub const Archetype = struct {
     allocator: std.mem.Allocator,
     hash: u64,
-    component_ids: std.ArrayListUnmanaged(u32),
     components: std.AutoArrayHashMapUnmanaged(u32, ErasedComponentStorage),
     entity_ids: std.ArrayListUnmanaged(EntityId) = .{},
 
-    pub fn calculateHash(storage: *ArchetypeStorage) void {
+    pub fn calculateHash(storage: *Archetype) void {
         var hash: u64 = 0;
-        for (storage.component_ids.items) |id| {
+        for (storage.components.keys()) |id| {
             hash +%= std.hash.Wyhash.hash(0, std.mem.asBytes(&id));
         }
         storage.hash = hash;
     }
 
-    pub fn deinit(storage: *ArchetypeStorage) void {
+    pub fn deinit(storage: *Archetype) void {
         for (storage.components.values()) |erased| {
             erased.deinit(erased.ptr, storage.allocator);
         }
@@ -248,24 +241,24 @@ pub const ArchetypeStorage = struct {
         storage.entity_ids.deinit(storage.allocator);
     }
 
-    pub fn add(storage: *ArchetypeStorage, entity: EntityId) !u32 {
+    pub fn add(storage: *Archetype, entity: EntityId) !u32 {
         const row_index = storage.entity_ids.items.len;
         try storage.entity_ids.append(storage.allocator, entity);
         return @intCast(row_index);
     }
 
-    pub fn undoAdd(storage: *ArchetypeStorage) void {
+    pub fn undoAdd(storage: *Archetype) void {
         _ = storage.entity_ids.pop();
     }
 
-    pub fn remove(storage: *ArchetypeStorage, row_index: u32) !void {
+    pub fn remove(storage: *Archetype, row_index: u32) !void {
         _ = storage.entity_ids.swapRemove(row_index);
         for (storage.components.values()) |component_storage| {
             component_storage.remove(component_storage.ptr, row_index);
         }
     }
 
-    pub fn set(storage: *ArchetypeStorage, row_index: u32, comptime T: type, component: T) !void {
+    pub fn set(storage: *Archetype, row_index: u32, comptime T: type, component: T) !void {
         const component_storage_erased = storage.components.get(typeId(T)).?;
         const component_storage = ErasedComponentStorage.cast(component_storage_erased.ptr, T);
         try component_storage.set(storage.allocator, row_index, component);
