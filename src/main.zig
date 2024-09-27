@@ -11,10 +11,26 @@ pub const World = struct {
     archetypes: std.AutoArrayHashMapUnmanaged(u64, Archetype),
     entities: std.AutoHashMapUnmanaged(EntityId, EntityInfo),
     entity_counter: EntityId,
+    queries: std.ArrayHashMapUnmanaged(QueryInfo, std.ArrayListUnmanaged(*Archetype), QueryContext, false),
+
+    pub const QueryInfo = struct {
+        hash: u64,
+        component_ids: std.ArrayListUnmanaged(u32),
+    };
 
     pub const EntityInfo = struct {
         archetype_index: u16,
         row_index: u32,
+    };
+
+    pub const QueryContext = struct {
+        pub fn hash(_: QueryContext, key: QueryInfo) u32 {
+            return std.hash.Fnv1a_32.hash(std.mem.asBytes(&key.hash));
+        }
+
+        pub fn eql(_: QueryContext, key: QueryInfo, other: QueryInfo, _: usize) bool {
+            return key.hash == other.hash and key.component_ids.items.len == other.component_ids.items.len;
+        }
     };
 
     pub fn init(allocator: std.mem.Allocator) !World {
@@ -23,6 +39,7 @@ pub const World = struct {
             .archetypes = .{},
             .entities = .{},
             .entity_counter = 0,
+            .queries = .{},
         };
         try world.archetypes.put(allocator, VOID_ARCHETYPE_HASH, Archetype{
             .allocator = allocator,
@@ -143,6 +160,16 @@ pub const World = struct {
                 return err;
             };
             new_archetype.calculateHash();
+            var query_iter = world.queries.iterator();
+            outer: while (query_iter.next()) |entry| {
+                const query_info = entry.key_ptr;
+                for (query_info.component_ids.items) |id| {
+                    if (!std.mem.containsAtLeast(u32, new_archetype.components.keys(), 1, &[_]u32{id})) {
+                        continue :outer;
+                    }
+                }
+                try entry.value_ptr.append(world.allocator, new_archetype);
+            }
         }
 
         var new_archetype = archetype_entry.value_ptr;
@@ -194,34 +221,123 @@ pub const World = struct {
         return component_storage.get(entity_info.row_index);
     }
 
-    pub fn query(world: *World, comptime components: []const type) []@Type(.{
-        .@"struct" = .{
-            .layout = .auto,
-            .is_tuple = false,
-            .decls = &.{},
-            .fields = blk: {
-                var f: [components.len]std.builtin.Type.StructField = undefined;
-                for (components, 0..) |T, i| {
-                    f[i] = std.builtin.Type.StructField{
-                        .name = @typeName(T),
-                        .type = T,
-                        .alignment = @alignOf(T),
-                        .default_value = null,
-                        .is_comptime = false,
-                    };
-                }
-                break :blk &f;
+    pub fn QueryResult(comptime components: []const type) type {
+        var f: [components.len]std.builtin.Type.StructField = undefined;
+        inline for (components, 0..) |T, i| {
+            var name: []const u8 = @typeName(T);
+            var name_parts = std.mem.splitScalar(u8, name, '.');
+            while (name_parts.next()) |s| {
+                name = s;
+            }
+            const nameZ: [:0]const u8 = std.fmt.comptimePrint("{s}", .{name});
+
+            f[i] = std.builtin.Type.StructField{
+                .name = nameZ,
+                .type = *T,
+                .is_comptime = false,
+                .default_value = null,
+                .alignment = @alignOf(*T),
+            };
+        }
+
+        return @Type(std.builtin.Type{
+            .@"struct" = .{
+                .fields = &f,
+                .layout = .auto,
+                .decls = &.{},
+                .is_tuple = false,
             },
-        },
-    }) {
-        _ = world;
-        return &.{};
+        });
+    }
+
+    pub fn QueryIter(comptime components: []const type) type {
+        return struct {
+            archetypes: *std.ArrayListUnmanaged(*Archetype),
+            archetype_index: usize = 0,
+            component_index: usize = 0,
+            next: *const fn (self: *@This()) ?QueryResult(components),
+        };
+    }
+
+    pub fn query(world: *World, comptime components: []const type) !QueryIter(components) {
+        const hash = blk: {
+            var h: u64 = 0;
+            inline for (components) |T| {
+                h +%= std.hash.Wyhash.hash(0, std.mem.asBytes(&typeId(T)));
+            }
+            break :blk h;
+        };
+        var component_ids: std.ArrayListUnmanaged(u32) = .{};
+        inline for (components) |T| {
+            try component_ids.append(world.allocator, typeId(T));
+        }
+        var archetypes: *std.ArrayListUnmanaged(*Archetype) = undefined;
+        const result = try world.queries.getOrPut(world.allocator, QueryInfo{ .hash = hash, .component_ids = component_ids });
+        if (!result.found_existing) {
+            const ptr: *std.ArrayListUnmanaged(*Archetype) = result.value_ptr;
+            ptr.* = std.ArrayListUnmanaged(*Archetype){};
+
+            outer: for (world.archetypes.values()) |archetype| {
+                inline for (components) |T| {
+                    if (!std.mem.containsAtLeast(u32, archetype.components.keys(), 1, &[_]u32{typeId(T)})) {
+                        continue :outer;
+                    }
+                }
+                std.debug.print("success, component id is {d} and component_ids for archetype is {d}\n", .{ component_ids.items, archetype.components.keys() });
+                try ptr.append(world.allocator, @constCast(&archetype));
+            }
+
+            std.debug.print("ARCHTYEPS.LEN THRU PTR:{}\n", .{ptr.items.len});
+            result.key_ptr.* = QueryInfo{ .hash = hash, .component_ids = component_ids };
+        }
+        archetypes = result.value_ptr;
+        std.debug.print("ARCHTYEPS.LEN THRU PTR2:{d}\n", .{archetypes.items[0].components.keys()});
+
+        return QueryIter(components){
+            .archetypes = archetypes,
+            .next = (struct {
+                pub fn next(self: *QueryIter(components)) ?QueryResult(components) {
+                    if (self.archetype_index >= self.archetypes.items.len) return null;
+
+                    std.debug.print("ARCHTYEPS.LEN THRU OBJ:{d}\n", .{self.archetypes.items[0].components.keys()});
+                    std.debug.print("SELFARCHETYPEINDEX:{}\n", .{self.archetype_index});
+                    var ret: QueryResult(components) = undefined;
+                    var len: usize = undefined;
+                    inline for (components) |T| {
+                        const name = blk: {
+                            comptime {
+                                var n: []const u8 = @typeName(T);
+                                var name_parts = std.mem.splitScalar(u8, n, '.');
+                                while (name_parts.next()) |s| {
+                                    n = s;
+                                }
+                                break :blk n;
+                            }
+                        };
+                        const component_id = typeId(T);
+                        const erased_storage = self.archetypes.items[self.archetype_index].components.get(component_id).?;
+                        const storage = ErasedComponentStorage.cast(erased_storage.ptr, T);
+                        std.debug.print("COMPONENT IDS OF ARCHETYPE:{d},", .{storage.data.items.len});
+                        len = storage.len.*;
+                        @field(ret, name) = &storage.data.items[self.component_index];
+                    }
+
+                    self.component_index += 1;
+                    if (self.component_index >= len) {
+                        self.component_index = 0;
+                        self.archetype_index += 1;
+                    }
+                    return ret;
+                }
+            }).next,
+        };
     }
 };
 
 pub const Archetype = struct {
     allocator: std.mem.Allocator,
     hash: u64,
+    // component_id -> component storage
     components: std.AutoArrayHashMapUnmanaged(u32, ErasedComponentStorage),
     entity_ids: std.ArrayListUnmanaged(EntityId) = .{},
 
@@ -312,7 +428,10 @@ pub fn ComponentStorage(comptime T: type) type {
     };
 }
 
-pub const Position = struct { x: i32, y: i32 };
+pub const Position = struct {
+    x: i32,
+    y: i32,
+};
 
 pub const Rotation = struct { degrees: f32 };
 
@@ -330,7 +449,7 @@ pub fn main() !void {
     var world = try World.init(allocator);
     var r = std.Random.DefaultPrng.init(0);
 
-    for (0..20000) |_| {
+    for (0..100000) |_| {
         const e = try world.entity();
         try world.setComponent(e, Position, Position{
             .x = @mod(r.random().int(i32), @as(i32, screenWidth)),
@@ -342,13 +461,18 @@ pub fn main() !void {
     }
 
     while (!rl.windowShouldClose()) {
-        std.debug.print("{}\n", .{rl.getFPS()});
+        // std.debug.print("{}\n", .{rl.getFPS()});
 
         rl.beginDrawing();
         defer rl.endDrawing();
 
-        _ = world.query(&[_]type{ Position, Rotation });
-        _ = world.query(&[_]type{Rotation});
+        var a = try world.query(&[_]type{ Position, Rotation });
+        // const b = world.query(&[_]type{Rotation});
+        while (a.next()) |result| {
+            result.Rotation.degrees += 1.0;
+        }
+
+        // std.debug.print("a:{s}\n", .{std.meta.fieldNames(World.QueryResult(&[_]type{ Position, Rotation }))});
 
         rl.clearBackground(rl.Color.white);
 
@@ -362,3 +486,7 @@ pub fn typeId(comptime T: type) u32 {
         const byte: u8 = 0;
     }.byte));
 }
+
+// pub fn queryId(comptime []const type) u32 {
+//
+// }
