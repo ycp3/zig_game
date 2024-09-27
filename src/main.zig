@@ -468,7 +468,7 @@ pub fn main() !void {
 
         var a = try world.query(&[_]type{ Position, Rotation });
         // const b = world.query(&[_]type{Rotation});
-        while (a.next()) |result| {
+        while (a.next(&a)) |result| {
             result.Rotation.degrees += 1.0;
         }
 
