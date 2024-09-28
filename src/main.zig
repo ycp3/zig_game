@@ -11,11 +11,11 @@ pub const World = struct {
     archetypes: std.AutoArrayHashMapUnmanaged(u64, Archetype),
     entities: std.AutoHashMapUnmanaged(EntityId, EntityInfo),
     entity_counter: EntityId,
-    queries: std.ArrayHashMapUnmanaged(QueryInfo, std.ArrayListUnmanaged(*Archetype), QueryContext, false),
+    queries: std.ArrayHashMapUnmanaged(QueryInfo, std.ArrayListUnmanaged(u16), QueryContext, false),
 
     pub const QueryInfo = struct {
         hash: u64,
-        component_ids: std.ArrayListUnmanaged(u32),
+        component_ids: []u32,
     };
 
     pub const EntityInfo = struct {
@@ -29,7 +29,7 @@ pub const World = struct {
         }
 
         pub fn eql(_: QueryContext, key: QueryInfo, other: QueryInfo, _: usize) bool {
-            return key.hash == other.hash and key.component_ids.items.len == other.component_ids.items.len;
+            return key.hash == other.hash and key.component_ids.len == other.component_ids.len;
         }
     };
 
@@ -119,7 +119,8 @@ pub const World = struct {
         return &world.archetypes.values()[ptr.archetype_index];
     }
 
-    pub fn setComponent(world: *World, _entity: EntityId, comptime T: type, component: T) !void {
+    pub fn setComponent(world: *World, _entity: EntityId, component: anytype) !void {
+        const T = @TypeOf(component);
         const component_id = typeId(T);
         var current_archetype = world.archetypeById(_entity);
         const old_hash = current_archetype.hash;
@@ -163,12 +164,12 @@ pub const World = struct {
             var query_iter = world.queries.iterator();
             outer: while (query_iter.next()) |entry| {
                 const query_info = entry.key_ptr;
-                for (query_info.component_ids.items) |id| {
+                for (query_info.component_ids) |id| {
                     if (!std.mem.containsAtLeast(u32, new_archetype.components.keys(), 1, &[_]u32{id})) {
                         continue :outer;
                     }
                 }
-                try entry.value_ptr.append(world.allocator, new_archetype);
+                try entry.value_ptr.append(world.allocator, @intCast(archetype_entry.index));
             }
         }
 
@@ -241,7 +242,7 @@ pub const World = struct {
         }
 
         return @Type(std.builtin.Type{
-            .@"struct" = .{
+            .Struct = .{
                 .fields = &f,
                 .layout = .auto,
                 .decls = &.{},
@@ -252,10 +253,11 @@ pub const World = struct {
 
     pub fn QueryIter(comptime components: []const type) type {
         return struct {
-            archetypes: *std.ArrayListUnmanaged(*Archetype),
+            world: *World,
+            query_index: usize = 0,
             archetype_index: usize = 0,
             component_index: usize = 0,
-            next: *const fn (self: *@This()) ?QueryResult(components),
+            next: *const fn (self: *@This()) error{OutOfMemory}!?QueryResult(components),
         };
     }
 
@@ -267,40 +269,34 @@ pub const World = struct {
             }
             break :blk h;
         };
-        var component_ids: std.ArrayListUnmanaged(u32) = .{};
-        inline for (components) |T| {
-            try component_ids.append(world.allocator, typeId(T));
+        var component_ids: [components.len]u32 = undefined;
+        inline for (components, 0..) |T, i| {
+            component_ids[i] = typeId(T);
         }
-        var archetypes: *std.ArrayListUnmanaged(*Archetype) = undefined;
-        const result = try world.queries.getOrPut(world.allocator, QueryInfo{ .hash = hash, .component_ids = component_ids });
+        const result = try world.queries.getOrPut(world.allocator, QueryInfo{ .hash = hash, .component_ids = &component_ids });
         if (!result.found_existing) {
-            const ptr: *std.ArrayListUnmanaged(*Archetype) = result.value_ptr;
-            ptr.* = std.ArrayListUnmanaged(*Archetype){};
+            const ptr = result.value_ptr;
+            ptr.* = std.ArrayListUnmanaged(u16){};
 
-            outer: for (world.archetypes.values()) |archetype| {
+            outer: for (world.archetypes.values(), 0..) |archetype, i| {
                 inline for (components) |T| {
                     if (!std.mem.containsAtLeast(u32, archetype.components.keys(), 1, &[_]u32{typeId(T)})) {
                         continue :outer;
                     }
                 }
-                std.debug.print("success, component id is {d} and component_ids for archetype is {d}\n", .{ component_ids.items, archetype.components.keys() });
-                try ptr.append(world.allocator, @constCast(&archetype));
+                try ptr.append(world.allocator, @intCast(i));
             }
-
-            std.debug.print("ARCHTYEPS.LEN THRU PTR:{}\n", .{ptr.items.len});
-            result.key_ptr.* = QueryInfo{ .hash = hash, .component_ids = component_ids };
         }
-        archetypes = result.value_ptr;
-        std.debug.print("ARCHTYEPS.LEN THRU PTR2:{d}\n", .{archetypes.items[0].components.keys()});
 
         return QueryIter(components){
-            .archetypes = archetypes,
+            .world = world,
+            .query_index = result.index,
             .next = (struct {
-                pub fn next(self: *QueryIter(components)) ?QueryResult(components) {
-                    if (self.archetype_index >= self.archetypes.items.len) return null;
+                pub fn next(self: *QueryIter(components)) !?QueryResult(components) {
+                    const archetype_ids = &self.world.queries.values()[self.query_index];
+                    if (self.archetype_index >= archetype_ids.items.len) return null;
+                    const current_index = archetype_ids.items[self.archetype_index];
 
-                    std.debug.print("ARCHTYEPS.LEN THRU OBJ:{d}\n", .{self.archetypes.items[0].components.keys()});
-                    std.debug.print("SELFARCHETYPEINDEX:{}\n", .{self.archetype_index});
                     var ret: QueryResult(components) = undefined;
                     var len: usize = undefined;
                     inline for (components) |T| {
@@ -315,9 +311,8 @@ pub const World = struct {
                             }
                         };
                         const component_id = typeId(T);
-                        const erased_storage = self.archetypes.items[self.archetype_index].components.get(component_id).?;
+                        const erased_storage = self.world.archetypes.values()[current_index].components.get(component_id).?;
                         const storage = ErasedComponentStorage.cast(erased_storage.ptr, T);
-                        std.debug.print("COMPONENT IDS OF ARCHETYPE:{d},", .{storage.data.items.len});
                         len = storage.len.*;
                         @field(ret, name) = &storage.data.items[self.component_index];
                     }
@@ -429,11 +424,13 @@ pub fn ComponentStorage(comptime T: type) type {
 }
 
 pub const Position = struct {
-    x: i32,
-    y: i32,
+    x: f32,
+    y: f32,
 };
 
 pub const Rotation = struct { degrees: f32 };
+
+pub const Color = struct { color: rl.Color };
 
 pub fn main() !void {
     const screenWidth = 800;
@@ -442,41 +439,58 @@ pub fn main() !void {
     rl.initWindow(screenWidth, screenHeight, "raylib-zig [core] example - basic window");
     defer rl.closeWindow();
 
-    rl.setTargetFPS(60);
+    rl.setTargetFPS(144);
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
     var world = try World.init(allocator);
-    var r = std.Random.DefaultPrng.init(0);
+    var r = std.Random.DefaultPrng.init(@bitCast(std.time.milliTimestamp()));
+    var random = r.random();
 
     for (0..100000) |_| {
         const e = try world.entity();
-        try world.setComponent(e, Position, Position{
-            .x = @mod(r.random().int(i32), @as(i32, screenWidth)),
-            .y = @mod(r.random().int(i32), @as(i32, screenHeight)),
+        try world.setComponent(e, Position{
+            .x = random.float(f32) * screenWidth,
+            .y = random.float(f32) * screenHeight,
         });
-        try world.setComponent(e, Rotation, Rotation{
-            .degrees = r.random().float(f32),
+        try world.setComponent(e, Rotation{
+            .degrees = random.float(f32) * 360,
+        });
+        try world.setComponent(e, Color{
+            .color = rl.Color{
+                .r = random.int(u8),
+                .g = random.int(u8),
+                .b = random.int(u8),
+                .a = 255,
+            },
         });
     }
 
     while (!rl.windowShouldClose()) {
-        // std.debug.print("{}\n", .{rl.getFPS()});
+        std.debug.print("{}\n", .{rl.getFPS()});
 
         rl.beginDrawing();
         defer rl.endDrawing();
-
-        var a = try world.query(&[_]type{ Position, Rotation });
-        // const b = world.query(&[_]type{Rotation});
-        while (a.next(&a)) |result| {
-            result.Rotation.degrees += 1.0;
-        }
-
-        // std.debug.print("a:{s}\n", .{std.meta.fieldNames(World.QueryResult(&[_]type{ Position, Rotation }))});
-
         rl.clearBackground(rl.Color.white);
 
-        rl.drawText("Congrats! You created your first window!", 190, 200, 20, rl.Color.light_gray);
+        var a = try world.query(&[_]type{ Position, Rotation, Color });
+        // const b = world.query(&[_]type{Rotation});
+        while (try a.next(&a)) |result| {
+            result.Position.x -= 5;
+            result.Rotation.degrees += 2;
+
+            rl.drawRectanglePro(
+                rl.Rectangle{
+                    .x = result.Position.x,
+                    .y = result.Position.y,
+                    .width = 20,
+                    .height = 20,
+                },
+                rl.Vector2.init(10, 10),
+                result.Rotation.degrees,
+                result.Color.color,
+            );
+        }
     }
 }
 
