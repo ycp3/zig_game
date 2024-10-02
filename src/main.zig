@@ -242,7 +242,7 @@ pub const World = struct {
         }
 
         return @Type(std.builtin.Type{
-            .Struct = .{
+            .@"struct" = .{
                 .fields = &f,
                 .layout = .auto,
                 .decls = &.{},
