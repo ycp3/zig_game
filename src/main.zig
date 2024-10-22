@@ -54,13 +54,18 @@ pub fn main() !void {
         defer rl.endDrawing();
         rl.clearBackground(rl.Color.ray_white);
 
-        // rl.drawText("Congrats! You created your first window!", 190, 200, 20, rl.Color.light_gray);
+        var a = try world.query(.{Position});
+        while (a.next()) |result| {
+            result.Position.x += 1;
+        }
+
+        var b = try world.query(.{Rotation});
+        while (b.next()) |result| {
+            result.Rotation.degrees += 2;
+        }
 
         var q = try world.query(.{ Position, Rotation, Color });
-        while (try q.next()) |result| {
-            // result.Position.x += 1;
-            result.Rotation.degrees += 2;
-
+        while (q.next()) |result| {
             rl.drawRectanglePro(
                 rl.Rectangle{
                     .x = result.Position.x,

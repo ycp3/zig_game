@@ -206,7 +206,7 @@ pub fn QueryIter(comptime components: anytype) type {
         query_index: usize,
         archetype_index: usize = 0,
         component_index: usize = 0,
-        pub fn next(iter: *QueryIter(components)) !?QueryResult(components) {
+        pub fn next(iter: *QueryIter(components)) ?QueryResult(components) {
             const archetype_ids = iter.world.queries.values()[iter.query_index];
             if (iter.archetype_index >= archetype_ids.items.len) return null;
             const current_archetype_index = archetype_ids.items[iter.archetype_index];
