@@ -14,7 +14,7 @@ entity_ids: std.ArrayListUnmanaged(EntityId),
 
 pub fn addEntity(self: *Archetype, entity_id: EntityId) !u32 {
     const row_index = self.entity_ids.items.len;
-    try self.entity_ids.items.append(entity_id);
+    try self.entity_ids.append(self.allocator, entity_id);
     return @intCast(row_index);
 }
 
@@ -25,6 +25,13 @@ pub fn undoAdd(self: *Archetype) void {
 pub fn set(self: *Archetype, row_index: u32, component: anytype) !void {
     const T = @TypeOf(component);
     const erased = self.components.get(utils.typeId(T)).?;
-    const component_data = erased.cast(T);
+    const component_data = ErasedComponentData.cast(erased.ptr, T);
     try component_data.set(self.allocator, row_index, component);
+}
+
+pub fn removeEntity(self: *Archetype, row_index: u32) void {
+    _ = self.entity_ids.swapRemove(row_index);
+    for (self.components.values()) |erased| {
+        erased.remove(erased.ptr, row_index);
+    }
 }
