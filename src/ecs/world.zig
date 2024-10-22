@@ -192,13 +192,20 @@ pub fn get(self: World, entity_id: EntityId, comptime T: type) ?T {
     return ErasedComponentData.cast(erased.ptr, T).get(entity_info.row_index);
 }
 
+pub fn getPtr(self: World, entity_id: EntityId, comptime T: type) ?*T {
+    const entity_info = self.entities.get(entity_id).?;
+    const archetype = self.archetypes.values()[entity_info.archetype_index];
+
+    const erased = archetype.components.get(utils.typeId(T)) orelse return null;
+    return ErasedComponentData.cast(erased.ptr, T).getPtr(entity_info.row_index);
+}
+
 pub fn QueryIter(comptime components: anytype) type {
     return struct {
         world: *World,
-        query_index: usize = 0,
+        query_index: usize,
         archetype_index: usize = 0,
         component_index: usize = 0,
-        // next: *const fn (self: *@This()) error{OutOfMemory}!?QueryResult(components),
         pub fn next(iter: *QueryIter(components)) !?QueryResult(components) {
             const archetype_ids = iter.world.queries.values()[iter.query_index];
             if (iter.archetype_index >= archetype_ids.items.len) return null;

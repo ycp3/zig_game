@@ -58,7 +58,7 @@ pub fn main() !void {
 
         var q = try world.query(.{ Position, Rotation, Color });
         while (try q.next()) |result| {
-            // result.Position.x -= 5;
+            // result.Position.x += 1;
             result.Rotation.degrees += 2;
 
             rl.drawRectanglePro(

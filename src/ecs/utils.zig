@@ -1,10 +1,7 @@
 const std = @import("std");
 
 pub fn typeId(comptime T: type) u32 {
-    return @truncate(@intFromPtr(&struct {
-        const _ = T;
-        const byte: u8 = 0;
-    }.byte));
+    return @intFromError(@field(anyerror, @typeName(T)));
 }
 
 pub fn hashComponents(component_ids: []const u32) u64 {
