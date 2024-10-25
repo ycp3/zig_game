@@ -5,10 +5,4 @@ pub const Position = struct {
     y: f32,
 };
 
-pub const Rotation = struct {
-    degrees: f32,
-};
-
-pub const Color = struct {
-    color: rl.Color,
-};
+pub const Player = struct {};

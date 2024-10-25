@@ -5,55 +5,48 @@ const c = @import("components.zig");
 const constants = @import("constants.zig");
 
 pub fn setup(world: *ecs.World) !void {
-    var r = std.Random.DefaultPrng.init(@bitCast(std.time.milliTimestamp()));
-    var random = r.random();
-
-    for (0..100000) |_| {
-        const e = try world.newEntity();
-        try world.set(e, c.Position{
-            .x = random.float(f32) * constants.screen_width,
-            .y = random.float(f32) * constants.screen_height,
-        });
-        try world.set(e, c.Rotation{
-            .degrees = random.float(f32) * 360,
-        });
-        try world.set(e, c.Color{
-            .color = rl.Color{
-                .r = random.int(u8),
-                .g = random.int(u8),
-                .b = random.int(u8),
-                .a = 255,
-            },
-        });
-    }
+    const e = try world.newEntity();
+    try world.set(e, c.Player{});
+    try world.set(e, c.Position{
+        .x = constants.screen_width / 2,
+        .y = constants.screen_height / 2,
+    });
 }
 
 pub fn run(world: *ecs.World) !void {
-    try moveSquares(world);
-    try rotateSquares(world);
-    try drawSquares(world);
+    try movement(world);
+    try gravity(world);
+    try draw(world);
 }
 
-fn moveSquares(world: *ecs.World) !void {
+fn movement(world: *ecs.World) !void {
+    var q = try world.query(.{ c.Position, c.Player }, .{});
+    while (q.next()) |r| {
+        if (rl.isKeyDown(rl.KeyboardKey.key_a)) {
+            r.Position.x -= 10;
+        }
+        if (rl.isKeyDown(rl.KeyboardKey.key_d)) {
+            r.Position.x += 10;
+        }
+        if (rl.isKeyDown(rl.KeyboardKey.key_w)) {
+            r.Position.y -= 20;
+        }
+    }
+}
+
+fn gravity(world: *ecs.World) !void {
     var q = try world.query(.{c.Position}, .{});
     while (q.next()) |r| {
-        r.Position.x += 1;
+        r.Position.y = @min(r.Position.y + 10, constants.screen_height);
     }
 }
 
-fn rotateSquares(world: *ecs.World) !void {
-    var q = try world.query(.{c.Rotation}, .{});
-    while (q.next()) |r| {
-        r.Rotation.degrees += 2;
-    }
-}
-
-fn drawSquares(world: *ecs.World) !void {
+fn draw(world: *ecs.World) !void {
     rl.beginDrawing();
     defer rl.endDrawing();
     rl.clearBackground(rl.Color.ray_white);
 
-    var q = try world.query(.{ c.Position, c.Rotation, c.Color }, .{});
+    var q = try world.query(.{c.Position}, .{});
     while (q.next()) |r| {
         rl.drawRectanglePro(
             rl.Rectangle{
@@ -62,9 +55,9 @@ fn drawSquares(world: *ecs.World) !void {
                 .width = 20,
                 .height = 20,
             },
-            rl.Vector2.init(10, 10),
-            r.Rotation.degrees,
-            r.Color.color,
+            rl.Vector2{ .x = 10, .y = 10 },
+            0,
+            rl.Color.red,
         );
     }
 }
