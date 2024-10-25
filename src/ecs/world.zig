@@ -119,14 +119,14 @@ pub fn set(self: *World, entity_id: EntityId, component: anytype) !void {
     const T = @TypeOf(component);
     const component_id = utils.typeId(T);
     const entity_info = self.entities.get(entity_id).?;
-    var old_archetype = self.archetypes.values()[entity_info.archetype_index];
+    var old_archetype_ptr = &self.archetypes.values()[entity_info.archetype_index];
 
-    if (old_archetype.components.contains(component_id)) {
-        try old_archetype.set(entity_info.row_index, component);
+    if (old_archetype_ptr.components.contains(component_id)) {
+        try old_archetype_ptr.set(entity_info.row_index, component);
         return;
     }
 
-    const new_hash = old_archetype.hash +% std.hash.Wyhash.hash(0, std.mem.asBytes(&component_id));
+    const new_hash = old_archetype_ptr.hash +% std.hash.Wyhash.hash(0, std.mem.asBytes(&component_id));
 
     const new_archetype_entry = try self.archetypes.getOrPut(self.allocator, new_hash);
     const new_archetype_ptr: *Archetype = new_archetype_entry.value_ptr;
@@ -140,7 +140,7 @@ pub fn set(self: *World, entity_id: EntityId, component: anytype) !void {
             .entity_ids = .{},
         };
 
-        var old_columns = old_archetype.components.iterator();
+        var old_columns = old_archetype_ptr.components.iterator();
         while (old_columns.next()) |entry| {
             var erased: ErasedComponentData = undefined;
             try entry.value_ptr.cloneType(entry.value_ptr.*, self.allocator, &erased);
@@ -165,7 +165,7 @@ pub fn set(self: *World, entity_id: EntityId, component: anytype) !void {
     const new_row = try new_archetype_ptr.addEntity(entity_id);
     errdefer new_archetype_ptr.undoAdd();
 
-    var column_iter = old_archetype.components.iterator();
+    var column_iter = old_archetype_ptr.components.iterator();
     while (column_iter.next()) |entry| {
         const old_component_data: *ErasedComponentData = entry.value_ptr;
         var new_component_data: ErasedComponentData = new_archetype_ptr.components.get(entry.key_ptr.*).?;
@@ -174,8 +174,73 @@ pub fn set(self: *World, entity_id: EntityId, component: anytype) !void {
 
     try new_archetype_ptr.set(new_row, component);
 
-    const swapped_entity_id = old_archetype.entity_ids.items[old_archetype.entity_ids.items.len - 1];
-    old_archetype.removeEntity(entity_info.row_index);
+    const swapped_entity_id = old_archetype_ptr.entity_ids.items[old_archetype_ptr.entity_ids.items.len - 1];
+    old_archetype_ptr.removeEntity(entity_info.row_index);
+
+    try self.entities.put(self.allocator, swapped_entity_id, entity_info);
+    try self.entities.put(self.allocator, entity_id, EntityInfo{
+        .archetype_index = @intCast(new_archetype_entry.index),
+        .row_index = new_row,
+    });
+}
+
+pub fn remove(self: *World, entity_id: EntityId, comptime T: type) !void {
+    const component_id = utils.typeId(T);
+    const entity_info = self.entities.get(entity_id).?;
+    var old_archetype_ptr = &self.archetypes.values()[entity_info.archetype_index];
+
+    if (!old_archetype_ptr.components.contains(component_id)) {
+        return;
+    }
+
+    const new_hash = utils.hashComponentsWithout(old_archetype_ptr.components.keys(), component_id);
+
+    const new_archetype_entry = try self.archetypes.getOrPut(self.allocator, new_hash);
+    const new_archetype_ptr: *Archetype = new_archetype_entry.value_ptr;
+    if (!new_archetype_entry.found_existing) {
+        errdefer std.debug.assert(self.archetypes.swapRemove(new_hash));
+
+        new_archetype_ptr.* = Archetype{
+            .allocator = self.allocator,
+            .components = .{},
+            .hash = new_hash,
+            .entity_ids = .{},
+        };
+
+        var old_columns = old_archetype_ptr.components.iterator();
+        while (old_columns.next()) |entry| {
+            if (entry.key_ptr.* == component_id) {
+                continue;
+            }
+            var erased: ErasedComponentData = undefined;
+            try entry.value_ptr.cloneType(entry.value_ptr.*, self.allocator, &erased);
+            try new_archetype_ptr.components.put(self.allocator, entry.key_ptr.*, erased);
+        }
+
+        var query_iterator = self.queries.iterator();
+        outer: while (query_iterator.next()) |entry| {
+            const query_info = entry.key_ptr;
+            for (query_info.component_ids) |id| {
+                if (!std.mem.containsAtLeast(u32, new_archetype_ptr.components.keys(), 1, &[_]u32{id})) {
+                    continue :outer;
+                }
+            }
+            try entry.value_ptr.append(self.allocator, @intCast(new_archetype_entry.index));
+        }
+    }
+
+    const new_row = try new_archetype_ptr.addEntity(entity_id);
+    errdefer new_archetype_ptr.undoAdd();
+
+    var column_iter = new_archetype_ptr.components.iterator();
+    while (column_iter.next()) |entry| {
+        const old_component_data: ErasedComponentData = old_archetype_ptr.components.get(entry.key_ptr.*).?;
+        var new_component_data: *ErasedComponentData = entry.value_ptr;
+        try new_component_data.copyFrom(new_component_data.ptr, self.allocator, new_row, entity_info.row_index, old_component_data.ptr);
+    }
+
+    const swapped_entity_id = old_archetype_ptr.entity_ids.items[old_archetype_ptr.entity_ids.items.len - 1];
+    old_archetype_ptr.removeEntity(entity_info.row_index);
 
     try self.entities.put(self.allocator, swapped_entity_id, entity_info);
     try self.entities.put(self.allocator, entity_id, EntityInfo{

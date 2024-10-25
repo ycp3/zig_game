@@ -12,6 +12,16 @@ pub fn hashComponents(component_ids: []const u32) u64 {
     return hash;
 }
 
+pub fn hashComponentsWithout(component_ids: []const u32, excluded: u32) u64 {
+    var hash: u64 = 0;
+    for (component_ids) |component_id| {
+        if (component_id != excluded) {
+            hash +%= std.hash.Wyhash.hash(0, std.mem.asBytes(&component_id));
+        }
+    }
+    return hash;
+}
+
 pub fn typesToIds(comptime components: anytype) [components.len]u32 {
     var component_ids: [components.len]u32 = undefined;
     inline for (components, 0..) |T, i| {
