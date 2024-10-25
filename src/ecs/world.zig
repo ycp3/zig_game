@@ -23,16 +23,21 @@ pub const EntityInfo = struct {
 
 pub const QueryInfo = struct {
     hash: u64,
+    excl_hash: u64,
     component_ids: []const u32,
+    excluded_ids: []const u32,
 };
 
 pub const QueryContext = struct {
     pub fn hash(_: QueryContext, key: QueryInfo) u32 {
-        return @truncate(key.hash);
+        return @truncate(key.hash +% key.excl_hash);
     }
 
     pub fn eql(_: QueryContext, key: QueryInfo, other: QueryInfo, _: usize) bool {
-        return key.hash == other.hash and key.component_ids.len == other.component_ids.len;
+        return key.hash == other.hash and
+            key.excl_hash == other.excl_hash and
+            key.component_ids.len == other.component_ids.len and
+            key.excluded_ids.len == other.excluded_ids.len;
     }
 };
 
@@ -151,14 +156,11 @@ pub fn set(self: *World, entity_id: EntityId, component: anytype) !void {
         try new_archetype_ptr.components.put(self.allocator, component_id, erased);
 
         var query_iterator = self.queries.iterator();
-        outer: while (query_iterator.next()) |entry| {
+        while (query_iterator.next()) |entry| {
             const query_info = entry.key_ptr;
-            for (query_info.component_ids) |id| {
-                if (!std.mem.containsAtLeast(u32, new_archetype_ptr.components.keys(), 1, &[_]u32{id})) {
-                    continue :outer;
-                }
+            if (utils.matchesQuery(query_info.*, new_archetype_ptr.components.keys())) {
+                try entry.value_ptr.append(self.allocator, @intCast(new_archetype_entry.index));
             }
-            try entry.value_ptr.append(self.allocator, @intCast(new_archetype_entry.index));
         }
     }
 
@@ -218,14 +220,11 @@ pub fn remove(self: *World, entity_id: EntityId, comptime T: type) !void {
         }
 
         var query_iterator = self.queries.iterator();
-        outer: while (query_iterator.next()) |entry| {
+        while (query_iterator.next()) |entry| {
             const query_info = entry.key_ptr;
-            for (query_info.component_ids) |id| {
-                if (!std.mem.containsAtLeast(u32, new_archetype_ptr.components.keys(), 1, &[_]u32{id})) {
-                    continue :outer;
-                }
+            if (utils.matchesQuery(query_info.*, new_archetype_ptr.components.keys())) {
+                try entry.value_ptr.append(self.allocator, @intCast(new_archetype_entry.index));
             }
-            try entry.value_ptr.append(self.allocator, @intCast(new_archetype_entry.index));
         }
     }
 
@@ -271,24 +270,29 @@ pub fn QueryIter(comptime components: anytype) type {
         query_index: usize,
         archetype_index: usize = 0,
         component_index: usize = 0,
+
         pub fn next(iter: *QueryIter(components)) ?QueryResult(components) {
             const archetype_ids = iter.world.queries.values()[iter.query_index];
             if (iter.archetype_index >= archetype_ids.items.len) return null;
             const current_archetype_index = archetype_ids.items[iter.archetype_index];
+            var archetype = iter.world.archetypes.values()[current_archetype_index];
+            while (archetype.entity_ids.items.len == 0) {
+                iter.archetype_index += 1;
+                if (iter.archetype_index >= archetype_ids.items.len) return null;
+                archetype = iter.world.archetypes.values()[archetype_ids.items[iter.archetype_index]];
+            }
 
             var ret: QueryResult(components) = undefined;
-            var len: usize = undefined;
             inline for (components) |T| {
                 const name = comptime utils.componentNameZ(T);
                 const component_id = utils.typeId(T);
-                const erased = iter.world.archetypes.values()[current_archetype_index].components.get(component_id).?;
+                const erased = archetype.components.get(component_id).?;
                 const component_data: *ComponentData(T) = ErasedComponentData.cast(erased.ptr, T);
-                len = component_data.data.items.len;
                 @field(ret, name) = component_data.getPtr(iter.component_index);
             }
 
             iter.component_index += 1;
-            if (iter.component_index >= len) {
+            if (iter.component_index >= archetype.entity_ids.items.len) {
                 iter.component_index = 0;
                 iter.archetype_index += 1;
             }
@@ -321,15 +325,27 @@ pub fn QueryResult(comptime components: anytype) type {
     });
 }
 
-pub fn query(self: *World, comptime components: anytype) !QueryIter(components) {
+pub fn query(self: *World, comptime components: anytype, comptime excluded: anytype) !QueryIter(components) {
     const component_ids = utils.typesToIds(components);
+    const excluded_ids = utils.typesToIds(excluded);
     const hash = utils.hashComponents(&component_ids);
-    const result = try self.queries.getOrPut(self.allocator, QueryInfo{ .hash = hash, .component_ids = &component_ids });
+    const excl_hash = utils.hashComponents(&excluded_ids);
+    const result = try self.queries.getOrPut(self.allocator, QueryInfo{
+        .hash = hash,
+        .excl_hash = excl_hash,
+        .component_ids = &component_ids,
+        .excluded_ids = &excluded_ids,
+    });
     if (!result.found_existing) {
         const ptr = result.value_ptr;
         ptr.* = std.ArrayListUnmanaged(u16){};
 
         outer: for (self.archetypes.values(), 0..) |archetype, i| {
+            inline for (excluded_ids) |id| {
+                if (std.mem.containsAtLeast(u32, archetype.components.keys(), 1, &[_]u32{id})) {
+                    continue :outer;
+                }
+            }
             inline for (component_ids) |id| {
                 if (!std.mem.containsAtLeast(u32, archetype.components.keys(), 1, &[_]u32{id})) {
                     continue :outer;

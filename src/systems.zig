@@ -35,14 +35,14 @@ pub fn run(world: *ecs.World) !void {
 }
 
 fn moveSquares(world: *ecs.World) !void {
-    var q = try world.query(.{c.Position});
+    var q = try world.query(.{c.Position}, .{});
     while (q.next()) |r| {
         r.Position.x += 1;
     }
 }
 
 fn rotateSquares(world: *ecs.World) !void {
-    var q = try world.query(.{c.Rotation});
+    var q = try world.query(.{c.Rotation}, .{});
     while (q.next()) |r| {
         r.Rotation.degrees += 2;
     }
@@ -53,7 +53,7 @@ fn drawSquares(world: *ecs.World) !void {
     defer rl.endDrawing();
     rl.clearBackground(rl.Color.ray_white);
 
-    var q = try world.query(.{ c.Position, c.Rotation, c.Color });
+    var q = try world.query(.{ c.Position, c.Rotation, c.Color }, .{});
     while (q.next()) |r| {
         rl.drawRectanglePro(
             rl.Rectangle{

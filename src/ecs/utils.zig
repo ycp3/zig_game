@@ -1,4 +1,5 @@
 const std = @import("std");
+const QueryInfo = @import("world.zig").QueryInfo;
 
 pub fn typeId(comptime T: type) u32 {
     return @intFromError(@field(anyerror, @typeName(T)));
@@ -38,4 +39,18 @@ pub fn componentNameZ(comptime T: type) [:0]const u8 {
     }
     const nameZ: [:0]const u8 = std.fmt.comptimePrint("{s}", .{name});
     return nameZ;
+}
+
+pub fn matchesQuery(query_info: QueryInfo, component_ids: []const u32) bool {
+    for (query_info.excluded_ids) |id| {
+        if (std.mem.containsAtLeast(u32, component_ids, 1, &[_]u32{id})) {
+            return false;
+        }
+    }
+    for (query_info.component_ids) |id| {
+        if (!std.mem.containsAtLeast(u32, component_ids, 1, &[_]u32{id})) {
+            return false;
+        }
+    }
+    return true;
 }
