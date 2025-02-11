@@ -22,13 +22,13 @@ pub fn run(world: *ecs.World) !void {
 fn movement(world: *ecs.World) !void {
     var q = try world.query(.{ c.Position, c.Player }, .{});
     while (q.next()) |r| {
-        if (rl.isKeyDown(rl.KeyboardKey.key_a)) {
+        if (rl.isKeyDown(rl.KeyboardKey.a)) {
             r.Position.x -= 10;
         }
-        if (rl.isKeyDown(rl.KeyboardKey.key_d)) {
+        if (rl.isKeyDown(rl.KeyboardKey.d)) {
             r.Position.x += 10;
         }
-        if (rl.isKeyDown(rl.KeyboardKey.key_w)) {
+        if (rl.isKeyDown(rl.KeyboardKey.w)) {
             r.Position.y -= 20;
         }
     }

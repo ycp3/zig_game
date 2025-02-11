@@ -4,7 +4,7 @@
     .dependencies = .{
         .@"raylib-zig" = .{
             .url = "https://github.com/Not-Nik/raylib-zig/archive/devel.tar.gz",
-            .hash = "122058d3ea6318efb819d0bffba630afd1a459fa3a99b4bfe4b680a937d5de04d2fc",
+            .hash = "1220223e9881fc9510eeb30fc2ee73fb49ee645bf1859cc46a92b649d35ecfd3351a",
         },
     },
     .paths = .{""},
