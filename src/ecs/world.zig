@@ -283,6 +283,7 @@ pub fn QueryIter(comptime components: anytype) type {
             }
 
             var ret: QueryResult(components) = undefined;
+            ret.entity = archetype.entity_ids.items[iter.component_index];
             inline for (components) |T| {
                 const name = comptime utils.componentNameZ(T);
                 const component_id = utils.typeId(T);
@@ -302,11 +303,20 @@ pub fn QueryIter(comptime components: anytype) type {
 }
 
 pub fn QueryResult(comptime components: anytype) type {
-    var f: [components.len]std.builtin.Type.StructField = undefined;
+    var f: [components.len + 1]std.builtin.Type.StructField = undefined;
+
+    f[0] = std.builtin.Type.StructField{
+        .name = "entity",
+        .type = EntityId,
+        .is_comptime = false,
+        .default_value = null,
+        .alignment = @alignOf(EntityId),
+    };
+
     inline for (components, 0..) |T, i| {
         const name = utils.componentNameZ(T);
 
-        f[i] = std.builtin.Type.StructField{
+        f[i + 1] = std.builtin.Type.StructField{
             .name = name,
             .type = *T,
             .is_comptime = false,
