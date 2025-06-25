@@ -5,4 +5,4 @@ pub const Position = struct {
     y: f32,
 };
 
-pub const Player = struct {};
+pub const Player = struct { _: u1 = 0 };

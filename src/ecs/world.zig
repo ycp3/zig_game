@@ -134,6 +134,7 @@ pub fn set(self: *World, entity_id: EntityId, component: anytype) !void {
     const new_hash = old_archetype_ptr.hash +% std.hash.Wyhash.hash(0, std.mem.asBytes(&component_id));
 
     const new_archetype_entry = try self.archetypes.getOrPut(self.allocator, new_hash);
+    old_archetype_ptr = &self.archetypes.values()[entity_info.archetype_index];
     const new_archetype_ptr: *Archetype = new_archetype_entry.value_ptr;
     if (!new_archetype_entry.found_existing) {
         errdefer std.debug.assert(self.archetypes.swapRemove(new_hash));
@@ -198,6 +199,7 @@ pub fn remove(self: *World, entity_id: EntityId, comptime T: type) !void {
     const new_hash = utils.hashComponentsWithout(old_archetype_ptr.components.keys(), component_id);
 
     const new_archetype_entry = try self.archetypes.getOrPut(self.allocator, new_hash);
+    old_archetype_ptr = &self.archetypes.values()[entity_info.archetype_index];
     const new_archetype_ptr: *Archetype = new_archetype_entry.value_ptr;
     if (!new_archetype_entry.found_existing) {
         errdefer std.debug.assert(self.archetypes.swapRemove(new_hash));
@@ -309,7 +311,7 @@ pub fn QueryResult(comptime components: anytype) type {
         .name = "entity",
         .type = EntityId,
         .is_comptime = false,
-        .default_value = null,
+        .default_value_ptr = null,
         .alignment = @alignOf(EntityId),
     };
 
@@ -320,19 +322,17 @@ pub fn QueryResult(comptime components: anytype) type {
             .name = name,
             .type = *T,
             .is_comptime = false,
-            .default_value = null,
+            .default_value_ptr = null,
             .alignment = @alignOf(*T),
         };
     }
 
-    return @Type(std.builtin.Type{
-        .Struct = .{
-            .fields = &f,
-            .layout = .auto,
-            .decls = &.{},
-            .is_tuple = false,
-        },
-    });
+    return @Type(.{ .@"struct" = .{
+        .layout = .auto,
+        .fields = &f,
+        .decls = &.{},
+        .is_tuple = false,
+    } });
 }
 
 pub fn query(self: *World, comptime components: anytype, comptime excluded: anytype) !QueryIter(components) {
