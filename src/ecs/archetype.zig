@@ -24,6 +24,9 @@ pub fn undoAdd(self: *Archetype) void {
 
 pub fn set(self: *Archetype, row_index: u32, component: anytype) !void {
     const T = @TypeOf(component);
+    if (@sizeOf(T) == 0) {
+        return;
+    }
     const erased = self.components.get(utils.typeId(T)).?;
     const component_data = ErasedComponentData.cast(erased.ptr, T);
     try component_data.set(self.allocator, row_index, component);

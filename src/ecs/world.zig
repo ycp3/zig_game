@@ -9,6 +9,7 @@ const ComponentData = @import("component_data.zig").ComponentData;
 pub const World = @This();
 
 const VOID_ARCHETYPE_HASH: u64 = 0;
+const ZST_DUMMY_PTR_TARGET: u8 = 0;
 
 allocator: std.mem.Allocator,
 entity_counter: EntityId,
@@ -84,6 +85,26 @@ pub fn newEntity(self: *World) !EntityId {
 }
 
 pub fn initErased(self: *World, comptime T: type) !ErasedComponentData {
+    if (@sizeOf(T) == 0) {
+        return .{
+            .ptr = @constCast(&ZST_DUMMY_PTR_TARGET),
+            .deinit = (struct {
+                pub fn deinit(_: *anyopaque, _: std.mem.Allocator) void {}
+            }).deinit,
+            .cloneType = (struct {
+                pub fn cloneType(erased: ErasedComponentData, _: std.mem.Allocator, out: *ErasedComponentData) !void {
+                    out.* = erased;
+                }
+            }).cloneType,
+            .copyFrom = (struct {
+                pub fn copyFrom(_: *anyopaque, _: std.mem.Allocator, _: u32, _: u32, _: *anyopaque) !void {}
+            }).copyFrom,
+            .remove = (struct {
+                pub fn remove(_: *anyopaque, _: u32) void {}
+            }).remove,
+        };
+    }
+
     const new_ptr = try self.allocator.create(ComponentData(T));
     new_ptr.* = ComponentData(T){};
 
@@ -255,6 +276,11 @@ pub fn get(self: World, entity_id: EntityId, comptime T: type) ?T {
     const archetype = self.archetypes.values()[entity_info.archetype_index];
 
     const erased = archetype.components.get(utils.typeId(T)) orelse return null;
+
+    if (@sizeOf(T) == 0) {
+        return T{};
+    }
+
     return ErasedComponentData.cast(erased.ptr, T).get(entity_info.row_index);
 }
 
@@ -263,6 +289,14 @@ pub fn getPtr(self: World, entity_id: EntityId, comptime T: type) ?*T {
     const archetype = self.archetypes.values()[entity_info.archetype_index];
 
     const erased = archetype.components.get(utils.typeId(T)) orelse return null;
+
+    if (@sizeOf(T) == 0) {
+        const V = struct {
+            var instance: T = .{};
+        };
+        return &V.instance;
+    }
+
     return ErasedComponentData.cast(erased.ptr, T).getPtr(entity_info.row_index);
 }
 
@@ -289,9 +323,17 @@ pub fn QueryIter(comptime components: anytype) type {
             inline for (components) |T| {
                 const name = comptime utils.componentNameZ(T);
                 const component_id = utils.typeId(T);
-                const erased = archetype.components.get(component_id).?;
-                const component_data: *ComponentData(T) = ErasedComponentData.cast(erased.ptr, T);
-                @field(ret, name) = component_data.getPtr(iter.component_index);
+
+                if (@sizeOf(T) == 0) {
+                    const V = struct {
+                        var instance: T = .{};
+                    };
+                    @field(ret, name) = &V.instance;
+                } else {
+                    const erased = archetype.components.get(component_id).?;
+                    const component_data: *ComponentData(T) = ErasedComponentData.cast(erased.ptr, T);
+                    @field(ret, name) = component_data.getPtr(iter.component_index);
+                }
             }
 
             iter.component_index += 1;
